@@ -5,6 +5,7 @@ from activecampaign import (
     get_send_date,
     get_campaign_metrics,
     get_campaign_lists,
+    get_campaign_message
 )
 
 from airtable import (
@@ -296,16 +297,10 @@ if __name__ == "__main__":
         print(
             f"Total Clicks: {metrics['clicks']}"
         )
-
-        # -----------------------------------------------------------
-        # Fields to update
-        # -----------------------------------------------------------
-
-        update_fields = {
-            "Subscribers": metrics["subscribers"],
-            "Total Opens": metrics["opens"],
-            "Total Clicks": metrics["clicks"],
-        }
+    
+                # Get the campaign subject line
+        campaign_message = get_campaign_message(campaign["id"])
+        campaign_subject = campaign_message.get("subject", "")
 
         # Build the ActiveCampaign/BlueLena campaign URL
         campaign_url = (
@@ -319,6 +314,7 @@ if __name__ == "__main__":
             "Total Opens": metrics["opens"],
             "Total Clicks": metrics["clicks"],
             "URL": campaign_url,
+            "Notes": campaign_subject,
         }
 
         # -----------------------------------------------------------

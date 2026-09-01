@@ -349,3 +349,16 @@ if __name__ == "__main__":
         print("END CAMPAIGN")
         print("=" * 80)
         print()
+
+def get_campaign_message(campaign_id):
+    """Retrieve the campaign message, including the subject line."""
+    url = f"{API_URL}/api/3/campaigns/{campaign_id}/campaignMessage"
+
+    response = requests.get(
+        url,
+        headers=HEADERS
+    )
+
+    response.raise_for_status()
+
+    return response.json()["campaignMessage"]
