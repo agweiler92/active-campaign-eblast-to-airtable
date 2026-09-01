@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta
+
 from activecampaign import (
     get_all_campaigns,
     is_dedicated_eblast,
@@ -190,6 +192,23 @@ if __name__ == "__main__":
             print("⚠️  NO SEND DATE — SKIPPING")
 
             missing_dates += 1
+
+            continue
+
+        # -----------------------------------------------------------
+        # Skip campaigns older than 7 days
+        # -----------------------------------------------------------
+
+        from datetime import datetime, timedelta
+
+        cutoff_date = (
+            datetime.now().date() - timedelta(days=7)
+        ).isoformat()
+
+        if send_date < cutoff_date:
+
+            print()
+            print("⏭️  OLDER THAN 7 DAYS — SKIPPING")
 
             continue
 
