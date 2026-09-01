@@ -307,12 +307,25 @@ if __name__ == "__main__":
             "Total Clicks": metrics["clicks"],
         }
 
+        # Build the ActiveCampaign/BlueLena campaign URL
+        campaign_url = (
+            f"https://cityside.bluelena.io/index.php"
+            f"?action=social&c={campaign['id']}&m={campaign['message_id']}"
+        )
+
+        # Fields to update
+        update_fields = {
+            "Subscribers": metrics["subscribers"],
+            "Total Opens": metrics["opens"],
+            "Total Clicks": metrics["clicks"],
+            "URL": campaign_url,
+        }
+
         # -----------------------------------------------------------
         # Perform Airtable update
         # -----------------------------------------------------------
 
         try:
-
             update_record(
                 record_id,
                 update_fields,
