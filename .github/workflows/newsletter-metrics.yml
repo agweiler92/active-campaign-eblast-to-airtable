@@ -1,0 +1,64 @@
+name: Weekly Newsletter Metrics Sync
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+      timezone: "America/Los_Angeles"
+
+  workflow_dispatch:
+    inputs:
+      run_mode:
+        description: "Choose a dry run or a live Airtable update"
+        required: true
+        type: choice
+        default: dry-run
+        options:
+          - dry-run
+          - write
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run newsletter metrics sync
+        env:
+          ACTIVECAMPAIGN_API_URL: ${{ secrets.ACTIVECAMPAIGN_API_URL }}
+          ACTIVECAMPAIGN_API_KEY: ${{ secrets.ACTIVECAMPAIGN_API_KEY }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+          RUN_MODE: ${{ github.event.inputs.run_mode || 'dry-run' }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" || "$RUN_MODE" == "write" ]]; then
+            python newsletter_reporting/aggregate_dry_run.py --write --yes
+          else
+            python newsletter_reporting/aggregate_dry_run.py
+          fi
+
+      - name: Save newsletter metrics CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: newsletter-aggregation-${{ github.run_number }}
+          path: newsletter_reporting/newsletter_aggregation_dry_run.csv
+          if-no-files-found: warn
+          retention-days: 30
