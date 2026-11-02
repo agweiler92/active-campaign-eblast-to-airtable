@@ -260,6 +260,12 @@ def main():
     insertions = []
     missing_newsletter = []
     excluded_count = 0
+
+    # Initialize campaign results independently of whether insertions exist.
+    campaigns = []
+    missing_list_count = 0
+    multiple_lists_count = 0
+
     for record in records:
         fields = record.get("fields", record)
         insertion_date = parse_date(fields.get("Date"))
@@ -293,10 +299,6 @@ def main():
             "normalized_url": normalize_url(url),
             "fields": fields,
         })
-
-        campaigns = []
-    missing_list_count = 0
-    multiple_lists_count = 0
 
     for campaign in activecampaign.get_all_campaigns():
         name = get_campaign_name(campaign)
