@@ -238,12 +238,33 @@ def main():
         action="store_true",
         help="Skip interactive confirmation; use only in trusted automation.",
     )
+    parser.add_argument(
+        "--start-date",
+        type=date.fromisoformat,
+        help="Optional reporting-window start date (YYYY-MM-DD). Must be used with --end-date.",
+    )
+    parser.add_argument(
+        "--end-date",
+        type=date.fromisoformat,
+        help="Optional reporting-window end date (YYYY-MM-DD). Must be used with --start-date.",
+    )
     args = parser.parse_args()
 
     if args.yes and not args.write:
         parser.error("--yes requires --write")
 
-    print(f"Reporting window: {WINDOW_START} through {TODAY}")
+    if (args.start_date is None) != (args.end_date is None):
+        parser.error("--start-date and --end-date must be provided together")
+
+    report_start = args.start_date or WINDOW_START
+    report_end = args.end_date or TODAY
+
+    if report_start > report_end:
+        parser.error("--start-date must be on or before --end-date")
+    if report_end > TODAY:
+        parser.error("--end-date cannot be in the future")
+
+    print(f"Reporting window: {report_start} through {report_end}")
     if not args.write:
         write_status = "DISABLED"
     elif args.yes:
@@ -269,7 +290,7 @@ def main():
     for record in records:
         fields = record.get("fields", record)
         insertion_date = parse_date(fields.get("Date"))
-        if not insertion_date or not (WINDOW_START <= insertion_date <= TODAY):
+        if not insertion_date or not (report_start <= insertion_date <= report_end):
             continue
 
         advertiser = as_text(fields.get("Advertiser"))
@@ -307,7 +328,7 @@ def main():
         if str(campaign.get("status", "")) != "5" or not sent_date:
             continue
 
-        if not (WINDOW_START <= sent_date <= TODAY):
+        if not (report_start <= sent_date <= report_end):
             continue
 
         cid = str(campaign.get("id") or campaign.get("campaignid") or "")
@@ -380,7 +401,7 @@ def main():
             [
                 campaign for campaign in campaigns
                 if campaign["newsletter"] == insertion["newsletter"]
-                and insertion["date"] <= campaign["date"] <= TODAY
+                and insertion["date"] <= campaign["date"] <= report_end
             ],
             key=lambda campaign: (campaign["date"], campaign["id"]),
         )
