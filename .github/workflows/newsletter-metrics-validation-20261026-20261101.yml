@@ -1,0 +1,44 @@
+name: Validate Newsletter Metrics (Oct 26-Nov 1, 2026)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/newsletter-metrics-validation-20261026-20261101.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    if: github.event.head_commit.message == 'Validate newsletter metrics for 2026-10-26 through 2026-11-01'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run date-specific read-only newsletter validation
+        env:
+          ACTIVECAMPAIGN_API_URL: ${{ secrets.ACTIVECAMPAIGN_API_URL }}
+          ACTIVECAMPAIGN_API_KEY: ${{ secrets.ACTIVECAMPAIGN_API_KEY }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+        run: |
+          python newsletter_reporting/aggregate_dry_run.py --start-date 2026-10-26 --end-date 2026-11-01
+      - name: Save validation CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: newsletter-metrics-validation-2026-10-26-through-2026-11-01
+          path: newsletter_reporting/newsletter_aggregation_dry_run.csv
+          if-no-files-found: warn
+          retention-days: 30
