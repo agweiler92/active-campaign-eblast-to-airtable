@@ -180,6 +180,75 @@ def get_campaign_detail(campaign_id):
 
     return None
 
+
+def campaign_message_contains_url(campaign_id, target_url, message_html_cache):
+    """
+    Return True when the advertiser's domain appears in the saved campaign HTML,
+    False when it does not appear, or None when message presence cannot be verified.
+    The check is deliberately conservative: a present domain with no click-report
+    row remains a review item, never an assumed zero.
+    """
+    campaign_id = str(campaign_id)
+
+    if campaign_id not in message_html_cache:
+        message_html_cache[campaign_id] = None
+        try:
+            campaign_message = activecampaign.get_campaign_message(campaign_id)
+            message_id = (
+                campaign_message.get("messageid")
+                or campaign_message.get("message")
+            ) if isinstance(campaign_message, dict) else None
+
+            api_url = getattr(activecampaign, "API_URL", "")
+            headers = getattr(activecampaign, "HEADERS", {})
+            if not api_url or not message_id:
+                raise RuntimeError("Campaign message ID or API URL unavailable")
+
+            response = requests.get(
+                f"{api_url.rstrip('/')}/api/3/messages/{message_id}",
+                headers=headers,
+                timeout=30,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            message = payload.get("message", {}) if isinstance(payload, dict) else {}
+            body = message.get("html") if isinstance(message, dict) else None
+
+            if isinstance(body, str) and body.strip():
+                message_html_cache[campaign_id] = body
+        except Exception as exc:
+            print(
+                f"REVIEW: Could not inspect email HTML for campaign "
+                f"{campaign_id}: {type(exc).__name__}"
+            )
+
+    body = message_html_cache.get(campaign_id)
+    if not body:
+        return None
+
+    target_host = (urlparse(target_url).hostname or "").lower()
+    if not target_host:
+        return None
+
+    target_hosts = {target_host}
+    if target_host.startswith("www."):
+        target_hosts.add(target_host[4:])
+    else:
+        target_hosts.add(f"www.{target_host}")
+
+    candidate = html.unescape(body)
+    for _ in range(7):
+        lowered = candidate.lower()
+        if any(host in lowered for host in target_hosts):
+            return True
+
+        decoded = unquote(html.unescape(candidate))
+        if decoded == candidate:
+            break
+        candidate = decoded
+
+    return False
+
 def get_campaign_metrics(campaign):
     metrics = activecampaign.get_campaign_metrics(campaign)
     if not isinstance(metrics, dict):
@@ -396,6 +465,7 @@ def main():
     print(f"Campaigns skipped for multiple list associations: {multiple_lists_count}")
 
     output_rows = []
+    message_html_cache = {}
     for insertion in insertions:
         relevant = sorted(
             [
@@ -414,6 +484,8 @@ def main():
         duplicate_flags = []
         missing_link_flags = []
         details = []
+
+        confirmed_absent_campaigns = []
 
         for campaign in relevant:
             if campaign["subscribers"] is None:
@@ -437,13 +509,33 @@ def main():
             elif len(matches) > 1:
                 campaign_clicks = "DUPLICATE_REVIEW"
                 duplicate_flags.append(
-                    f"{campaign['name']} has {len(matches)} matching link rows"
+                    f"{campaign['name']} (ID {campaign['id']}) has "
+                    f"{len(matches)} matching link-report rows"
                 )
             else:
-                campaign_clicks = "NO_MATCH"
-                missing_link_flags.append(
-                    f"{campaign['name']} (ID {campaign['id']})"
+                included = campaign_message_contains_url(
+                    campaign["id"],
+                    insertion["url"],
+                    message_html_cache,
                 )
+
+                if included is False:
+                    campaign_clicks = 0
+                    confirmed_absent_campaigns.append(
+                        f"{campaign['name']} (ID {campaign['id']})"
+                    )
+                elif included is True:
+                    campaign_clicks = "LINK_PRESENT_NO_REPORT_ROW"
+                    missing_link_flags.append(
+                        f"{campaign['name']} (ID {campaign['id']}): "
+                        "URL appears in saved email HTML but has no click-report row"
+                    )
+                else:
+                    campaign_clicks = "PRESENCE_UNVERIFIED"
+                    missing_link_flags.append(
+                        f"{campaign['name']} (ID {campaign['id']}): "
+                        "could not verify whether URL was included in the email"
+                    )
 
             details.append(
                 f"{campaign['date']} {campaign['name']} ID={campaign['id']}; "
@@ -469,53 +561,49 @@ def main():
                 "REVIEW_MISSING_METRICS" if opens_missing else opens_total
             ),
             "current_total_clicks": fields.get("Total Clicks", ""),
-                          "proposed_total_clicks": (
-                  "REVIEW_DUPLICATE_LINKS" if duplicate_flags
-                  else "REVIEW_MISSING_LINKS" if missing_link_flags
-                  else clicks_total
-              ),
-              "missing_link_review": "; ".join(missing_link_flags),
+            "confirmed_clicks_from_report_rows": clicks_total,
+            "confirmed_zero_click_campaigns": "; ".join(confirmed_absent_campaigns),
+            "proposed_total_clicks": (
+                "REVIEW_DUPLICATE_LINKS" if duplicate_flags
+                else "REVIEW_MISSING_LINKS" if missing_link_flags
+                else clicks_total
+            ),
+            "click_reporting_status": (
+                "REVIEW_DUPLICATE_LINKS" if duplicate_flags
+                else "REVIEW_MISSING_LINKS" if missing_link_flags
+                else "COMPLETE"
+            ),
+            "missing_link_review": "; ".join(missing_link_flags),
             "click_sync_date_proposed": TODAY.isoformat(),
             "duplicate_link_review": "; ".join(duplicate_flags),
             "campaign_detail": " | ".join(details),
             "write_status": "DRY RUN ONLY - NOT WRITTEN",
         })
 
-        # Identify records that must not be written.
+        # Review status is separated by metric group. Uncertain clicks do not block
+    # otherwise valid subscriber/open updates, but click fields are held back.
+    def is_number(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+
     review_rows = []
+    core_review_ids = set()
+    click_review_ids = set()
 
     for row in output_rows:
-        proposed_metrics = (
-            row["proposed_subscribers"],
-            row["proposed_total_opens"],
-            row["proposed_total_clicks"],
+        core_metrics_need_review = (
+            not row.get("record_id")
+            or int(row.get("campaigns_count") or 0) == 0
+            or not is_number(row["proposed_subscribers"])
+            or not is_number(row["proposed_total_opens"])
         )
+        clicks_need_review = not is_number(row["proposed_total_clicks"])
 
-        has_review_marker = any(
-            "REVIEW" in str(value)
-            for value in proposed_metrics
-        )
-        has_link_flags = bool(
-            row.get("missing_link_review")
-            or row.get("duplicate_link_review")
-        )
-        has_no_campaigns = int(row.get("campaigns_count") or 0) == 0
-        has_missing_record_id = not row.get("record_id")
-        has_non_numeric_metrics = not all(
-            isinstance(value, (int, float)) and not isinstance(value, bool)
-            for value in proposed_metrics
-        )
-
-        if (
-            has_review_marker
-            or has_link_flags
-            or has_no_campaigns
-            or has_missing_record_id
-            or has_non_numeric_metrics
-        ):
+        if core_metrics_need_review:
+            core_review_ids.add(row["record_id"])
+        if clicks_need_review:
+            click_review_ids.add(row["record_id"])
+        if core_metrics_need_review or clicks_need_review:
             review_rows.append(row)
-
-    review_ids = {row["record_id"] for row in review_rows}
 
     # Default behavior remains strictly read-only.
     if not args.write:
@@ -525,11 +613,12 @@ def main():
     else:
         writable_rows = [
             row for row in output_rows
-            if row["record_id"] not in review_ids
+            if row["record_id"] not in core_review_ids
         ]
 
-        print(f"Rows eligible for Airtable update: {len(writable_rows)}")
-        print(f"Rows skipped for review: {len(review_rows)}")
+        print(f"Rows eligible for subscriber/open updates: {len(writable_rows)}")
+        print(f"Rows skipped for core metric review: {len(core_review_ids)}")
+        print(f"Rows with clicks held for review: {len(click_review_ids)}")
 
         if writable_rows:
             if args.yes:
@@ -549,23 +638,28 @@ def main():
 
             else:
                 for row in output_rows:
-                    if row["record_id"] in review_ids:
-                        row["write_status"] = "SKIPPED - REVIEW"
+                    record_id = row["record_id"]
+
+                    if record_id in core_review_ids:
+                        row["write_status"] = "SKIPPED - CORE METRICS REVIEW"
                         continue
 
                     fields_to_update = {
                         "Subscribers": row["proposed_subscribers"],
                         "Total Opens": row["proposed_total_opens"],
-                        "Total Clicks": row["proposed_total_clicks"],
-                        "Click Sync Date": row["click_sync_date_proposed"],
                     }
 
+                    clicks_are_complete = record_id not in click_review_ids
+                    if clicks_are_complete:
+                        fields_to_update["Total Clicks"] = row["proposed_total_clicks"]
+                        fields_to_update["Click Sync Date"] = row["click_sync_date_proposed"]
+
                     try:
-                        airtable.update_record(
-                            row["record_id"],
-                            fields_to_update,
+                        airtable.update_record(record_id, fields_to_update)
+                        row["write_status"] = (
+                            "WRITTEN" if clicks_are_complete
+                            else "WRITTEN - CLICKS HELD FOR REVIEW"
                         )
-                        row["write_status"] = "WRITTEN"
 
                     except Exception as exc:
                         row["write_status"] = (
@@ -573,22 +667,23 @@ def main():
                         )
                         print(
                             f"ERROR: Update failed for record "
-                            f"{row['record_id']} ({type(exc).__name__})"
+                            f"{record_id} ({type(exc).__name__})"
                         )
 
         else:
             for row in output_rows:
-                row["write_status"] = "SKIPPED - NO ELIGIBLE ROWS"
-            print("No eligible rows to update.")
+                row["write_status"] = "SKIPPED - NO ELIGIBLE CORE METRICS"
+            print("No eligible subscriber/open rows to update.")
 
-    # Write the CSV after processing so its status column reflects the outcome.
+        # Write the CSV after processing so its status column reflects the outcome.
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
 
     columns = list(output_rows[0].keys()) if output_rows else [
         "record_id", "advertiser", "site", "newsletter", "insertion_date",
         "url", "campaigns_count", "current_subscribers", "proposed_subscribers",
         "current_total_opens", "proposed_total_opens", "current_total_clicks",
-        "proposed_total_clicks", "missing_link_review",
+        "confirmed_clicks_from_report_rows", "confirmed_zero_click_campaigns",
+        "proposed_total_clicks", "click_reporting_status", "missing_link_review",
         "click_sync_date_proposed", "duplicate_link_review",
         "campaign_detail", "write_status",
     ]
@@ -605,7 +700,15 @@ def main():
     print(f"Rows requiring review: {len(review_rows)} of {len(output_rows)}")
 
     written_count = sum(
+        str(row["write_status"]).startswith("WRITTEN")
+        for row in output_rows
+    )
+    full_click_write_count = sum(
         row["write_status"] == "WRITTEN" for row in output_rows
+    )
+    clicks_held_count = sum(
+        row["write_status"] == "WRITTEN - CLICKS HELD FOR REVIEW"
+        for row in output_rows
     )
     failed_count = sum(
         str(row["write_status"]).startswith("WRITE FAILED")
@@ -613,6 +716,8 @@ def main():
     )
 
     print(f"Airtable records successfully updated: {written_count}")
+    print(f"Records with complete click totals written: {full_click_write_count}")
+    print(f"Records with clicks held for review: {clicks_held_count}")
     print(f"Airtable update failures: {failed_count}")
     for row in review_rows:
         print(
