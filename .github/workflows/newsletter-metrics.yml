@@ -1,14 +1,6 @@
 name: Weekly Newsletter Metrics Sync
 
 on:
-  # Run a safe dry-run when this workflow or its script changes on main.
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/newsletter-metrics.yml"
-      - "newsletter_reporting/aggregate_dry_run.py"
-
   schedule:
     - cron: "15 8 * * 1"
       timezone: "America/Los_Angeles"
@@ -26,6 +18,11 @@ on:
 
 permissions:
   contents: read
+
+# Avoid multiple overlapping metric syncs when a manual run and schedule coincide.
+concurrency:
+  group: weekly-newsletter-metrics
+  cancel-in-progress: false
 
 jobs:
   sync:
