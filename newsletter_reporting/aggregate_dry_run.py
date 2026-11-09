@@ -20,7 +20,11 @@ import activecampaign
 import airtable
 
 TODAY = date.today()
-WINDOW_START = TODAY - timedelta(days=6)
+
+# Default reporting period is the most recently completed Monday-Sunday week.
+# For example, a run on Monday, Nov 9 uses Nov 2-Nov 8.
+WINDOW_START = TODAY - timedelta(days=TODAY.weekday() + 7)
+WINDOW_END = WINDOW_START + timedelta(days=6)
 OUTPUT = ROOT / "newsletter_reporting" / "newsletter_aggregation_dry_run.csv"
 EXCLUDED_ADVERTISER = "university of san francisco"
 
@@ -326,7 +330,7 @@ def main():
         parser.error("--start-date and --end-date must be provided together")
 
     report_start = args.start_date or WINDOW_START
-    report_end = args.end_date or TODAY
+    report_end = args.end_date or WINDOW_END
 
     if report_start > report_end:
         parser.error("--start-date must be on or before --end-date")
