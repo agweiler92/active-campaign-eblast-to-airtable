@@ -197,16 +197,25 @@ def campaign_message_contains_url(campaign_id, target_url, message_html_cache):
     if campaign_id not in message_html_cache:
         message_html_cache[campaign_id] = None
         try:
-            campaign_message = activecampaign.get_campaign_message(campaign_id)
-            message_id = (
-                campaign_message.get("messageid")
-                or campaign_message.get("message")
-            ) if isinstance(campaign_message, dict) else None
-
             api_url = getattr(activecampaign, "API_URL", "")
             headers = getattr(activecampaign, "HEADERS", {})
-            if not api_url or not message_id:
-                raise RuntimeError("Campaign message ID or API URL unavailable")
+            if not api_url:
+                raise RuntimeError("ActiveCampaign API URL unavailable")
+
+            campaign_message_response = requests.get(
+                f"{api_url.rstrip('/')}/api/3/campaigns/{campaign_id}/campaignMessage",
+                headers=headers,
+                timeout=30,
+            )
+            campaign_message_response.raise_for_status()
+            campaign_message_payload = campaign_message_response.json()
+            campaign_message = (
+                campaign_message_payload.get("campaignMessage", {})
+                if isinstance(campaign_message_payload, dict) else {}
+            )
+            message_id = campaign_message.get("messageid") or campaign_message.get("message")
+            if not message_id:
+                raise RuntimeError("Campaign message ID unavailable")
 
             response = requests.get(
                 f"{api_url.rstrip('/')}/api/3/messages/{message_id}",
