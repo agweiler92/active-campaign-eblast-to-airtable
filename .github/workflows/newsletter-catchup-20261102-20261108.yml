@@ -1,0 +1,46 @@
+name: Newsletter Metrics Catch-up (Nov 2-8, 2026)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/newsletter-catchup-20261102-20261108.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  catchup:
+    if: github.event.head_commit.message == 'Catch up newsletter metrics for 2026-11-02 through 2026-11-08'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Write last completed week's newsletter metrics to Airtable
+        env:
+          ACTIVECAMPAIGN_API_URL: ${{ secrets.ACTIVECAMPAIGN_API_URL }}
+          ACTIVECAMPAIGN_API_KEY: ${{ secrets.ACTIVECAMPAIGN_API_KEY }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+        run: |
+          python newsletter_reporting/aggregate_dry_run.py --write --yes --start-date 2026-11-02 --end-date 2026-11-08
+      - name: Save catch-up CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: newsletter-metrics-catchup-2026-11-02-through-2026-11-08
+          path: newsletter_reporting/newsletter_aggregation_dry_run.csv
+          if-no-files-found: warn
+          retention-days: 30
