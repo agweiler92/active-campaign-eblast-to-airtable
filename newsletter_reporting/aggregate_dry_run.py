@@ -279,7 +279,8 @@ def get_campaign_metrics(campaign):
 
     return (
         number(("subscribers", "send_amt", "sent", "sent_to")),
-        number(("total_opens", "opens", "open_amt")),
+        # Use ActiveCampaign uniqueopens (distinct contacts), never total opens.
+        number(("unique_opens", "uniqueopens")),
     )
 
 
@@ -347,6 +348,7 @@ def main():
         parser.error("--end-date cannot be in the future")
 
     print(f"Reporting window: {report_start} through {report_end}")
+    print("Open metric: uniqueopens (distinct contacts)")
     if not args.write:
         write_status = "DISABLED"
     elif args.yes:
@@ -573,6 +575,7 @@ def main():
             "proposed_total_opens": (
                 "REVIEW_MISSING_METRICS" if opens_missing else opens_total
             ),
+            "opens_metric_basis": "uniqueopens",
             "current_total_clicks": fields.get("Total Clicks", ""),
             "confirmed_clicks_from_report_rows": clicks_total,
             "confirmed_zero_click_campaigns": "; ".join(confirmed_absent_campaigns),
@@ -694,8 +697,9 @@ def main():
     columns = list(output_rows[0].keys()) if output_rows else [
         "record_id", "advertiser", "site", "newsletter", "insertion_date",
         "url", "campaigns_count", "current_subscribers", "proposed_subscribers",
-        "current_total_opens", "proposed_total_opens", "current_total_clicks",
-        "confirmed_clicks_from_report_rows", "confirmed_zero_click_campaigns",
+        "current_total_opens", "proposed_total_opens", "opens_metric_basis",
+        "current_total_clicks", "confirmed_clicks_from_report_rows",
+        "confirmed_zero_click_campaigns",
         "proposed_total_clicks", "click_reporting_status", "missing_link_review",
         "click_sync_date_proposed", "duplicate_link_review",
         "campaign_detail", "write_status",
