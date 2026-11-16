@@ -27,9 +27,44 @@ jobs:
           ACTIVECAMPAIGN_API_KEY: ${{ secrets.ACTIVECAMPAIGN_API_KEY }}
         run: |
           python - <<'PY'
+          import html
           import requests
+          from urllib.parse import parse_qs, urlencode, urlparse, unquote
           import activecampaign
-          from newsletter_reporting.aggregate_dry_run import normalize_url
+
+          IGNORED_PARAMS = {
+              "utm_source", "utm_medium", "utm_campaign", "utm_term",
+              "utm_content", "gclid", "fbclid", "mc_cid", "mc_eid",
+          }
+
+          def decode_newspack_url(url):
+              current = html.unescape((url or "").strip())
+              for _ in range(5):
+                  params = parse_qs(urlparse(current).query, keep_blank_values=True)
+                  if params.get("np_newsletters_click") and params.get("url"):
+                      destination = html.unescape(params["url"][0]).replace("&amp;", "&")
+                      if destination and destination != current:
+                          current = destination
+                          continue
+                  decoded = html.unescape(unquote(current)).replace("&amp;", "&")
+                  if decoded != current and decoded.startswith(("http://", "https://")):
+                      current = decoded
+                      continue
+                  break
+              return current.replace("&amp;", "&")
+
+          def normalize_url(url):
+              parsed = urlparse(decode_newspack_url(url))
+              host = (parsed.hostname or "").lower()
+              if host.startswith("www."):
+                  host = host[4:]
+              path = unquote(parsed.path or "/")
+              query = []
+              for key, values in parse_qs(parsed.query, keep_blank_values=True).items():
+                  if key.lower() not in IGNORED_PARAMS:
+                      query.extend((key, value) for value in values)
+              query.sort()
+              return host, path, urlencode(query, doseq=True)
 
           target = "http://www.fourthstreet.com/eventslisting/2025/11/8/dazzling-lights-on-afsck"
           target_norm = normalize_url(target)
