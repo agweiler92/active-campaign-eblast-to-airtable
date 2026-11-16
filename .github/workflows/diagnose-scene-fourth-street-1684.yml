@@ -1,0 +1,72 @@
+name: Diagnose Fourth Street Click Rows (Scene 1684)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/diagnose-scene-fourth-street-1684.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: github.event.head_commit.message == 'Inspect duplicate Fourth Street links in The Scene campaign 1684'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Inspect matching link report rows without subscriber details
+        env:
+          ACTIVECAMPAIGN_API_URL: ${{ secrets.ACTIVECAMPAIGN_API_URL }}
+          ACTIVECAMPAIGN_API_KEY: ${{ secrets.ACTIVECAMPAIGN_API_KEY }}
+        run: |
+          python - <<'PY'
+          import requests
+          import activecampaign
+          from newsletter_reporting.aggregate_dry_run import normalize_url
+
+          target = "http://www.fourthstreet.com/eventslisting/2025/11/8/dazzling-lights-on-afsck"
+          target_norm = normalize_url(target)
+          response = requests.get(
+              f"{activecampaign.API_URL.rstrip('/')}/admin/api.php",
+              headers=activecampaign.HEADERS,
+              params={
+                  "api_action": "campaign_report_link_list",
+                  "api_output": "json",
+                  "campaignid": "1684",
+              },
+              timeout=30,
+          )
+          response.raise_for_status()
+          payload = response.json()
+          if isinstance(payload, dict):
+              rows = [v for k,v in payload.items() if str(k).isdigit() and isinstance(v,dict)]
+          elif isinstance(payload,list):
+              rows = [r for r in payload if isinstance(r,dict)]
+          else:
+              rows = []
+
+          matches=[]
+          for row in rows:
+              url=str(row.get("link") or "").strip()
+              if not url or normalize_url(url)!=target_norm:
+                  continue
+              try: clicks=int(float(row.get("a_total") or 0))
+              except (TypeError,ValueError): clicks=None
+              try: unique=int(float(row.get("a_unique") or 0))
+              except (TypeError,ValueError): unique=None
+              matches.append((url,clicks,unique))
+
+          print(f"Target normalized URL: {target_norm}")
+          print(f"Matching report rows: {len(matches)}")
+          for i,(url,clicks,unique) in enumerate(matches,1):
+              print(f"Match {i}: total_clicks={clicks}; unique_clicks={unique}; link={url}")
+          if matches:
+              print(f"Sum of matching total_clicks: {sum(x[1] or 0 for x in matches)}")
+          PY
