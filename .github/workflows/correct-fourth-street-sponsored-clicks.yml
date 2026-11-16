@@ -1,0 +1,85 @@
+name: Correct Fourth Street Sponsored Clicks
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/correct-fourth-street-sponsored-clicks.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Correct only Fourth Street click fields
+        env:
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+        run: |
+          python - <<'PY'
+          from datetime import date, datetime
+          import airtable
+
+          target_date = date(2026, 11, 9)
+
+          def parse_date(value):
+              if not value:
+                  return None
+              try:
+                  return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
+              except ValueError:
+                  try:
+                      return date.fromisoformat(str(value)[:10])
+                  except ValueError:
+                      return None
+
+          records = airtable.get_all_records()
+          matches = []
+          for record in records:
+              fields = record.get("fields", record)
+              advertiser = str(fields.get("Advertiser") or "").strip().lower()
+              newsletter = str(fields.get("Newsletter") or "").strip()
+              record_date = parse_date(fields.get("Date"))
+              if (
+                  advertiser == "fourth street"
+                  and newsletter == "The Scene"
+                  and record_date == target_date
+              ):
+                  matches.append(record)
+
+          if len(matches) != 1:
+              raise RuntimeError(
+                  f"Expected exactly one Fourth Street / The Scene record dated "
+                  f"{target_date}; found {len(matches)}. No update performed."
+              )
+
+          record = matches[0]
+          record_id = record.get("id")
+          if not record_id:
+              raise RuntimeError("Matched record has no Airtable record ID")
+
+          airtable.update_record(
+              record_id,
+              {
+                  "Total Clicks": 20,
+                  "Click Sync Date": "2026-11-16",
+              },
+          )
+
+          print("Corrected Fourth Street / The Scene:")
+          print(f"Record ID: {record_id}")
+          print("Total Clicks: 20 (Newspack-tracked sponsored ad link)")
+          print("Click Sync Date: 2026-11-16")
+          print("Only Total Clicks and Click Sync Date were updated.")
+          PY
