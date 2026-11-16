@@ -1,0 +1,15 @@
+name: Temporary Schedule Heartbeat Diagnostic
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+      timezone: "America/Los_Angeles"
+
+jobs:
+  heartbeat:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm scheduler trigger
+        run: |
+          echo "GitHub schedule heartbeat triggered."
+          date -u
