@@ -505,6 +505,7 @@ def main():
         confirmed_absent_campaigns = []
 
         for campaign in relevant:
+            campaign_click_basis = ""
             if campaign["subscribers"] is None:
                 subscriber_missing = True
             else:
@@ -544,9 +545,31 @@ def main():
                     and all(source_url and source_url in body for source_url in source_urls)
                 )
 
-                if all_distinct_hrefs_verified:
+                newspack_matches = [
+                    link for link in matches
+                    if parse_qs(
+                        urlparse(link.get("source_url", "")).query,
+                        keep_blank_values=True,
+                    ).get("np_newsletters_click") == ["1"]
+                ]
+
+                if (
+                    all_distinct_hrefs_verified
+                    and len(newspack_matches) == 1
+                ):
+                    # When one Newspack-tracked href and one or more direct hrefs
+                    # resolve to the same destination, the wrapped link is the
+                    # newsletter ad click record. Direct links can be editorial
+                    # references to the same advertiser website and are excluded.
+                    campaign_clicks = newspack_matches[0]["clicks"]
+                    clicks_total += campaign_clicks
+                    campaign_click_basis = "sole verified Newspack-tracked href"
+                elif all_distinct_hrefs_verified:
+                    # Preserve the verified multi-link sum when no unique Newspack
+                    # ad href distinguishes one tracked placement from editorial links.
                     campaign_clicks = sum(link["clicks"] for link in matches)
                     clicks_total += campaign_clicks
+                    campaign_click_basis = "sum of distinct verified hrefs"
                 else:
                     campaign_clicks = "DUPLICATE_REVIEW"
                     duplicate_flags.append(
@@ -582,7 +605,8 @@ def main():
             details.append(
                 f"{campaign['date']} {campaign['name']} ID={campaign['id']}; "
                 f"subs={campaign['subscribers']}; opens={campaign['opens']}; "
-                f"advertiser_clicks={campaign_clicks}"
+                f"advertiser_clicks={campaign_clicks}; "
+                f"click_basis={campaign_click_basis or 'single_or_zero_match'}"
             )
 
         fields = insertion["fields"]
