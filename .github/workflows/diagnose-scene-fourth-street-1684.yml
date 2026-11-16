@@ -103,4 +103,34 @@ jobs:
               print(f"Match {i}: total_clicks={clicks}; unique_clicks={unique}; link={url}")
           if matches:
               print(f"Sum of matching total_clicks: {sum(x[1] or 0 for x in matches)}")
+
+          # Inspect only email hrefs containing the advertiser domain; never print
+          # the full message body or subscriber-level content.
+          from html.parser import HTMLParser
+          class HrefParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.hrefs=[]
+              def handle_starttag(self, tag, attrs):
+                  if tag.lower() == "a":
+                      href=dict(attrs).get("href")
+                      if href and "fourthstreet.com" in href.lower():
+                          self.hrefs.append(href)
+
+          campaign_message=activecampaign.get_campaign_message("1684")
+          message_id=campaign_message.get("messageid") or campaign_message.get("message")
+          message_response=requests.get(
+              f"{activecampaign.API_URL.rstrip('/')}/api/3/messages/{message_id}",
+              headers=activecampaign.HEADERS,
+              timeout=30,
+          )
+          message_response.raise_for_status()
+          message_payload=message_response.json()
+          message_obj=message_payload.get("message",{}) if isinstance(message_payload,dict) else {}
+          body=message_obj.get("html","") if isinstance(message_obj,dict) else ""
+          parser=HrefParser()
+          parser.feed(body or "")
+          print(f"Email HTML hrefs containing fourthstreet.com: {len(parser.hrefs)}")
+          for i,href in enumerate(parser.hrefs,1):
+              print(f"Email href {i}: {href}")
           PY
