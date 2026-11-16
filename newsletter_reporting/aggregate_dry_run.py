@@ -547,12 +547,6 @@ def main():
                 if all_distinct_hrefs_verified:
                     campaign_clicks = sum(link["clicks"] for link in matches)
                     clicks_total += campaign_clicks
-                    details.append(
-                        f"{campaign['date']} {campaign['name']} ID={campaign['id']}; "
-                        f"subs={campaign['subscribers']}; opens={campaign['opens']}; "
-                        f"advertiser_clicks={campaign_clicks} "
-                        f"({len(matches)} distinct tracked hrefs)"
-                    )
                 else:
                     campaign_clicks = "DUPLICATE_REVIEW"
                     duplicate_flags.append(
