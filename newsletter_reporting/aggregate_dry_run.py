@@ -141,6 +141,8 @@ def get_link_rows(campaign_id):
         # Never retain or print subscriber-level "info" data.
         result.append({
             "normalized_url": normalize_url(url),
+            "source_url": url,
+            "link_id": str(row.get("id") or ""),
             "clicks": clicks,
         })
     return result
@@ -522,11 +524,42 @@ def main():
                 campaign_clicks = matches[0]["clicks"]
                 clicks_total += campaign_clicks
             elif len(matches) > 1:
-                campaign_clicks = "DUPLICATE_REVIEW"
-                duplicate_flags.append(
-                    f"{campaign['name']} (ID {campaign['id']}) has "
-                    f"{len(matches)} matching link-report rows"
+                # Different tracked hrefs can point to the same advertiser page.
+                # Sum them only when every distinct source href is present in the
+                # saved email HTML; this avoids counting duplicate report entries.
+                source_urls = [
+                    link.get("source_url", "")
+                    for link in matches
+                ]
+                distinct_source_urls = set(source_urls)
+                included = campaign_message_contains_url(
+                    campaign["id"],
+                    insertion["url"],
+                    message_html_cache,
                 )
+                body = html.unescape(message_html_cache.get(str(campaign["id"])) or "")
+                all_distinct_hrefs_verified = (
+                    included is True
+                    and len(distinct_source_urls) == len(matches)
+                    and all(source_url and source_url in body for source_url in source_urls)
+                )
+
+                if all_distinct_hrefs_verified:
+                    campaign_clicks = sum(link["clicks"] for link in matches)
+                    clicks_total += campaign_clicks
+                    details.append(
+                        f"{campaign['date']} {campaign['name']} ID={campaign['id']}; "
+                        f"subs={campaign['subscribers']}; opens={campaign['opens']}; "
+                        f"advertiser_clicks={campaign_clicks} "
+                        f"({len(matches)} distinct tracked hrefs)"
+                    )
+                else:
+                    campaign_clicks = "DUPLICATE_REVIEW"
+                    duplicate_flags.append(
+                        f"{campaign['name']} (ID {campaign['id']}) has "
+                        f"{len(matches)} matching link-report rows that could not "
+                        "all be verified as distinct hrefs in the saved email HTML"
+                    )
             else:
                 included = campaign_message_contains_url(
                     campaign["id"],
