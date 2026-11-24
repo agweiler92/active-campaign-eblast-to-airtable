@@ -1,0 +1,115 @@
+name: Update Three Verified Eblast Records
+on:
+  push:
+    branches:
+      - codex/update-three-eblasts-20261124
+    paths:
+      - .github/workflows/update-three-eblasts-20261124.yml
+permissions:
+  contents: read
+concurrency:
+  group: update-three-eblasts-20261124
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Update and verify only the three authorized records
+        env:
+          ACTIVECAMPAIGN_API_URL: ${{ secrets.ACTIVECAMPAIGN_API_URL }}
+          ACTIVECAMPAIGN_API_KEY: ${{ secrets.ACTIVECAMPAIGN_API_KEY }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+        run: |
+          python - <<'PY'
+          import contextlib
+          import io
+          import activecampaign
+          import airtable
+          from sync_campaigns import get_list_names, SITE_MAPPING
+          
+          TARGETS = [
+              ("ROW13", "Henry J Kaiser", "Berkeleyside", "2026-11-19", "1736", "2026-11-19"),
+              ("ROW15", "Ecole Bilingue de Berkeley", "Berkeleyside", "2026-11-12", "1663", "2026-11-13"),
+              ("ROW16", "Berkeley Moshav", "The Oaklandside", "2026-11-11", "1553", "2026-11-12"),
+          ]
+          
+          def values(value):
+              return [value] if isinstance(value, str) else (value or [])
+          
+          def main():
+              with contextlib.redirect_stdout(io.StringIO()):
+                  records = airtable.get_all_records()
+                  campaigns = activecampaign.get_all_campaigns()
+              plan = []
+              for label, advertiser, site, planned_date, campaign_id, sent_date in TARGETS:
+                  candidates = [
+                      r for r in records
+                      if str(r.get("fields", {}).get("Advertiser") or "").strip() == advertiser
+                      and r.get("fields", {}).get("Date") == planned_date
+                      and site in values(r.get("fields", {}).get("Site"))
+                      and "Dedicated Eblast" in values(r.get("fields", {}).get("Placement"))
+                  ]
+                  if len(candidates) != 1:
+                      raise RuntimeError(label + "_RECORD_NOT_UNIQUE")
+                  source = [c for c in campaigns if str(c.get("id")) == campaign_id]
+                  if len(source) != 1:
+                      raise RuntimeError(label + "_CAMPAIGN_NOT_UNIQUE")
+                  campaign = source[0]
+                  if (str(campaign.get("status")) != "5"
+                      or not activecampaign.is_dedicated_eblast(campaign)
+                      or activecampaign.extract_advertiser(campaign) != advertiser
+                      or activecampaign.get_send_date(campaign) != sent_date):
+                      raise RuntimeError(label + "_SOURCE_VALIDATION_FAILED")
+                  with contextlib.redirect_stdout(io.StringIO()):
+                      lists = get_list_names(campaign_id)
+                  sites = {SITE_MAPPING[name] for name in lists if name in SITE_MAPPING}
+                  if sites != {site}:
+                      raise RuntimeError(label + "_PUBLICATION_VALIDATION_FAILED")
+                  raw = [campaign.get(k) for k in ("send_amt", "opens", "linkclicks")]
+                  if any(v is None or v == "" for v in raw):
+                      raise RuntimeError(label + "_MISSING_SOURCE_METRICS")
+                  metrics = [int(v) for v in raw]
+                  if metrics[0] <= 0 or any(v < 0 for v in metrics):
+                      raise RuntimeError(label + "_INVALID_SOURCE_METRICS")
+                  fields = dict(zip(("Subscribers", "Total Opens", "Total Clicks"), metrics))
+                  plan.append((label, candidates[0], fields))
+                  print(label + " PRECHECK_PASSED", flush=True)
+              if len({r["id"] for _, r, _ in plan}) != 3:
+                  raise RuntimeError("TARGET_RECORDS_NOT_DISTINCT")
+              print("ALL_THREE_PRECHECKS_PASSED", flush=True)
+              for label, record, fields in plan:
+                  record_id = record["id"]
+                  current = airtable.table.get(record_id).get("fields", {})
+                  protected = ("Advertiser", "Date", "Site", "Placement")
+                  if any(current.get(k) != record["fields"].get(k) for k in protected):
+                      raise RuntimeError(label + "_RECORD_CHANGED_SINCE_PRECHECK")
+                  with contextlib.redirect_stdout(io.StringIO()):
+                      if not all(current.get(k) == v for k, v in fields.items()):
+                          airtable.update_record(record_id, fields)
+                  verified = airtable.table.get(record_id).get("fields", {})
+                  if not all(verified.get(k) == v for k, v in fields.items()):
+                      raise RuntimeError(label + "_METRICS_VERIFICATION_FAILED")
+                  if any(verified.get(k) != current.get(k) for k in protected):
+                      raise RuntimeError(label + "_PROTECTED_FIELDS_CHANGED")
+                  print(label + " METRICS_UPDATE_VERIFIED", flush=True)
+              print("THREE_RECORD_UPDATE_COMPLETE", flush=True)
+          
+          try:
+              main()
+          except Exception as exc:
+              # Log only a safe validation code or exception type, never source data.
+              safe = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__
+              print("UPDATE_STOPPED " + safe, flush=True)
+              raise SystemExit(1)
+          
+          PY
