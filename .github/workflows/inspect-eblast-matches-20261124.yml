@@ -1,0 +1,100 @@
+name: Inspect Eblast Matching Conditions (Read Only)
+on:
+  push:
+    branches:
+      - codex/inspect-eblast-matches-20261124
+    paths:
+      - .github/workflows/inspect-eblast-matches-20261124.yml
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Check matching conditions without logging record values
+        env:
+          ACTIVECAMPAIGN_API_URL: ${{ secrets.ACTIVECAMPAIGN_API_URL }}
+          ACTIVECAMPAIGN_API_KEY: ${{ secrets.ACTIVECAMPAIGN_API_KEY }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+        run: |
+          python - <<'PY'
+          import contextlib
+          import io
+          import json
+          import unicodedata
+          import activecampaign
+          import airtable
+          from sync_campaigns import find_airtable_match, get_list_names
+          
+          with contextlib.redirect_stdout(io.StringIO()):
+              records = airtable.get_all_records()
+              campaigns = activecampaign.get_all_campaigns()
+          
+          def normalized(value):
+              return " ".join(unicodedata.normalize("NFKC", str(value or "")).split()).casefold()
+          
+          def as_list(value):
+              return [value] if isinstance(value, str) else (value or [])
+          
+          checks = [
+              ("ROW13", "Henry J Kaiser", "Berkeleyside", "2026-11-19", ["1736"]),
+              ("ROW14", "Sweetgreen", "Nosh", "2026-11-16", []),
+              ("ROW15", "Ecole Bilingue de Berkeley", "Berkeleyside", "2026-11-12", ["1663"]),
+              ("ROW16", "Berkeley Moshav", "The Oaklandside", "2026-11-11", ["1553"]),
+          ]
+          for label, advertiser, site, planned_date, campaign_ids in checks:
+              candidates = [
+                  record for record in records
+                  if normalized(record.get("fields", {}).get("Advertiser")) == normalized(advertiser)
+                  and str(record.get("fields", {}).get("Date") or "")[:10] == planned_date
+                  and any(normalized(item) == normalized(site) for item in as_list(record.get("fields", {}).get("Site")))
+              ]
+              print(label + " CANDIDATE_COUNT " + str(len(candidates)))
+              for record in candidates:
+                  f = record.get("fields", {})
+                  print(label + " CHECKS " + json.dumps({
+                      "advertiser_exact": f.get("Advertiser") == advertiser,
+                      "advertiser_matches_after_strip": str(f.get("Advertiser") or "").strip() == advertiser,
+                      "advertiser_matches_after_normalizing": normalized(f.get("Advertiser")) == normalized(advertiser),
+                      "date_exact": f.get("Date") == planned_date,
+                      "site_exact": site in as_list(f.get("Site")),
+                      "placement_exact": "Dedicated Eblast" in as_list(f.get("Placement")),
+                      "placement_matches_after_normalizing": any(normalized(p) == "dedicated eblast" for p in as_list(f.get("Placement"))),
+                  }, sort_keys=True))
+              matched_campaign_count = 0
+              for c in campaigns:
+                  if campaign_ids:
+                      if str(c.get("id")) not in campaign_ids:
+                          continue
+                  else:
+                      if "sweetgreen" not in normalized(c.get("name")):
+                          continue
+                      if not str(activecampaign.get_send_date(c) or "").startswith("2026-11"):
+                          continue
+                  with contextlib.redirect_stdout(io.StringIO()):
+                      lists = get_list_names(c.get("id"))
+                      matched, mapped_site = find_airtable_match(records, activecampaign.extract_advertiser(c), activecampaign.get_send_date(c), lists)
+                  if label == "ROW14" and not (mapped_site == "Nosh" or any("nosh" in normalized(v) for v in lists)):
+                      continue
+                  matched_campaign_count += 1
+                  print(label + " CAMPAIGN_CHECKS " + json.dumps({
+                      "recognized_dedicated_eblast": activecampaign.is_dedicated_eblast(c),
+                      "actual_date_matches_planned": activecampaign.get_send_date(c) == planned_date,
+                      "advertiser_exact": activecampaign.extract_advertiser(c) == advertiser,
+                      "publication_exact": mapped_site == site,
+                      "existing_match_count": len(matched),
+                  }, sort_keys=True))
+              print(label + " CAMPAIGN_COUNT " + str(matched_campaign_count))
+          print("READ_ONLY_AUDIT_COMPLETE")
+          
+          PY
