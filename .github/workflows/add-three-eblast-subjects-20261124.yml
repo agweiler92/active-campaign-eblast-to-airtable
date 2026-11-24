@@ -1,0 +1,121 @@
+name: Add Subject Lines to Three Eblast Records
+on:
+  push:
+    branches:
+      - codex/update-three-eblasts-20261124
+    paths:
+      - .github/workflows/add-three-eblast-subjects-20261124.yml
+permissions:
+  contents: read
+concurrency:
+  group: update-three-eblasts-20261124
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Add and verify subject lines without logging their contents
+        env:
+          ACTIVECAMPAIGN_API_URL: ${{ secrets.ACTIVECAMPAIGN_API_URL }}
+          ACTIVECAMPAIGN_API_KEY: ${{ secrets.ACTIVECAMPAIGN_API_KEY }}
+          AIRTABLE_TOKEN: ${{ secrets.AIRTABLE_TOKEN }}
+          AIRTABLE_BASE_ID: ${{ secrets.AIRTABLE_BASE_ID }}
+          AIRTABLE_TABLE_NAME: ${{ secrets.AIRTABLE_TABLE_NAME }}
+        run: |
+          python - <<'PY'
+          import contextlib
+          import io
+          import activecampaign
+          import airtable
+          from sync_campaigns import get_list_names, SITE_MAPPING
+          
+          TARGETS = [
+              ("ROW13", "Henry J Kaiser", "Berkeleyside", "2026-11-19", "1736", "2026-11-19"),
+              ("ROW15", "Ecole Bilingue de Berkeley", "Berkeleyside", "2026-11-12", "1663", "2026-11-13"),
+              ("ROW16", "Berkeley Moshav", "The Oaklandside", "2026-11-11", "1553", "2026-11-12"),
+          ]
+          
+          def values(value):
+              return [value] if isinstance(value, str) else (value or [])
+          
+          def main():
+              with contextlib.redirect_stdout(io.StringIO()):
+                  records = airtable.get_all_records()
+              plan = []
+              for label, advertiser, site, planned_date, campaign_id, sent_date in TARGETS:
+                  matches = [
+                      r for r in records
+                      if str(r.get("fields", {}).get("Advertiser") or "").strip() == advertiser
+                      and r.get("fields", {}).get("Date") == planned_date
+                      and site in values(r.get("fields", {}).get("Site"))
+                      and "Dedicated Eblast" in values(r.get("fields", {}).get("Placement"))
+                  ]
+                  if len(matches) != 1:
+                      raise RuntimeError(label + "_RECORD_NOT_UNIQUE")
+                  with contextlib.redirect_stdout(io.StringIO()):
+                      campaign = activecampaign.get_campaign(campaign_id).get("campaign", {})
+                      lists = get_list_names(campaign_id)
+                      message = activecampaign.get_campaign_message(campaign_id)
+                  if (str(campaign.get("status")) != "5"
+                      or activecampaign.extract_advertiser(campaign) != advertiser
+                      or activecampaign.get_send_date(campaign) != sent_date
+                      or {SITE_MAPPING[n] for n in lists if n in SITE_MAPPING} != {site}):
+                      raise RuntimeError(label + "_SOURCE_VALIDATION_FAILED")
+                  subject = message.get("subject")
+                  if not isinstance(subject, str) or not subject.strip():
+                      message_id = message.get("messageid") or message.get("message")
+                      if not isinstance(message_id, (str, int)) or not str(message_id).isdigit():
+                          raise RuntimeError(label + "_SUBJECT_UNAVAILABLE")
+                      response = activecampaign.requests.get(
+                          activecampaign.API_URL.rstrip("/") + "/api/3/messages/" + str(message_id),
+                          headers=activecampaign.HEADERS,
+                          timeout=30,
+                      )
+                      response.raise_for_status()
+                      subject = response.json().get("message", {}).get("subject")
+                  if not isinstance(subject, str) or not subject.strip():
+                      raise RuntimeError(label + "_SUBJECT_UNAVAILABLE")
+                  plan.append((label, matches[0], subject))
+                  print(label + " SUBJECT_PRECHECK_PASSED", flush=True)
+              if len({r["id"] for _, r, _ in plan}) != 3:
+                  raise RuntimeError("RECORDS_NOT_DISTINCT")
+              protected = ("Advertiser", "Date", "Site", "Placement", "Subscribers", "Total Opens", "Total Clicks")
+              for label, record, subject in plan:
+                  current = airtable.table.get(record["id"]).get("fields", {})
+                  if any(current.get(k) != record["fields"].get(k) for k in protected):
+                      raise RuntimeError(label + "_RECORD_CHANGED")
+                  previous_notes = current.get("Notes") or ""
+                  if not isinstance(previous_notes, str):
+                      raise RuntimeError(label + "_NOTES_TYPE_UNEXPECTED")
+                  if subject in previous_notes:
+                      proposed_notes = previous_notes
+                  elif previous_notes.strip():
+                      proposed_notes = previous_notes.rstrip() + "\nSubject: " + subject
+                  else:
+                      proposed_notes = subject
+                  if proposed_notes != previous_notes:
+                      with contextlib.redirect_stdout(io.StringIO()):
+                          airtable.update_record(record["id"], {"Notes": proposed_notes})
+                  verified = airtable.table.get(record["id"]).get("fields", {})
+                  if verified.get("Notes") != proposed_notes:
+                      raise RuntimeError(label + "_SUBJECT_VERIFICATION_FAILED")
+                  if any(verified.get(k) != current.get(k) for k in protected):
+                      raise RuntimeError(label + "_PROTECTED_FIELDS_CHANGED")
+                  print(label + " SUBJECT_UPDATE_VERIFIED", flush=True)
+              print("THREE_SUBJECT_UPDATES_COMPLETE", flush=True)
+          
+          try:
+              main()
+          except Exception as exc:
+              print("UPDATE_STOPPED " + (str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__), flush=True)
+              raise SystemExit(1)
+          
+          PY
